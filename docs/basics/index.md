@@ -188,15 +188,26 @@ leverage a Slurm cluster[^2]. Let's setup our cluster config for that case by ru
 [^2]: Adding support for other kinds of clusters should be straightforward - open an issue if you need that
 
 This time pick `slurm` for the config type and fill out all other required information
-(such as ssh access, account, partition, etc.).
+(such as ssh access, account, and any scheduler defaults your cluster uses). `ns setup` will also ask which Slurm container
+runtime to use:
+
+- `pyxis` is the existing default and works with Pyxis-compatible image refs or `.sqsh` images.
+- `podman-hpc` is intended for NERSC Perlmutter and launches jobs with `podman-hpc run`.
+
+On clusters such as NERSC Perlmutter you can leave `partition` unset and instead define defaults like
+`account`, `qos`, and `constraint` in the cluster config. You can still override any of them per job.
 
 !!! note
     If you're an NVIDIA employee, we have a pre-configured cluster configs for internal usage with pre-built sqsh
     containers available at [https://gitlab-master.nvidia.com/igitman/nemo-skills-configs](https://gitlab-master.nvidia.com/igitman/nemo-skills-configs). You can most likely
     skip the step below and reuse one of the existing configurations.
 
-You will also need to build .sqsh files for all containers or upload all `dockerfile:...` containers to
-some registry (e.g. dockerhub) and reference the uploaded versions. To build sqsh files you can use the following commands
+How you fill the `containers:` section depends on the runtime.
+
+### Pyxis runtime
+
+Build `.sqsh` files or upload all `dockerfile:...` containers to some registry (e.g. Docker Hub)
+and reference the uploaded versions. To build `.sqsh` files you can use the following commands:
 
 1. Build images locally and upload to some container registry. E.g.
    ```bash
@@ -213,9 +224,27 @@ some registry (e.g. dockerhub) and reference the uploaded versions. To build sqs
    ```
 4. Specify this image path in your cluster config
    ```yaml
+   runtime: pyxis
    containers:
      nemo-skills: /path/to/nemo-skills-image.sqsh
    ```
+
+### podman-hpc runtime (NERSC Perlmutter)
+
+Prebuild the required images with `podman-hpc`, run `podman-hpc migrate`, and reference the migrated
+image names directly in your cluster config. Do not use `dockerfile:...` entries in this mode.
+
+```yaml
+executor: slurm
+runtime: podman-hpc
+containers:
+  nemo-skills: nemo-skills-smoke:0.1
+```
+
+Phase 1 support for `runtime: podman-hpc` is intentionally narrow:
+
+- supported: single-container jobs such as `ns run_cmd`, or `ns generate` when you point at an external/pre-hosted server
+- not supported yet: hosted server sidecars, sandbox sidecars, or multi-container heterogeneous jobs
 
 
 Now that we have a slurm config setup, we can try running some jobs. Generally, you will need to upload models / data

@@ -54,3 +54,6 @@ site/
 
 #scripts at root level
 /*.sh
+
+# local Perlmutter smoke-test secrets
+ns-tests/env_vars

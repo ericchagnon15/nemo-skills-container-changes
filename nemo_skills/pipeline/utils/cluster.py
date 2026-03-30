@@ -35,6 +35,9 @@ from nemo_skills.utils import get_logger_name
 
 LOG = logging.getLogger(get_logger_name(__file__))
 
+DEFAULT_SLURM_RUNTIME = "pyxis"
+SUPPORTED_SLURM_RUNTIMES = ("pyxis", "podman-hpc")
+
 # Add a module-level set to track which environment variables have been logged
 _logged_required_env_vars = set()
 _logged_optional_env_vars = set()
@@ -104,6 +107,18 @@ def get_timeout_str(cluster_config, partition, with_save_delay: bool = True) -> 
     timeout = _get_timeout(cluster_config, partition, with_save_delay=with_save_delay)
     timeout_str = f"{timeout.days:02d}:{timeout.seconds // 3600:02d}:{(timeout.seconds % 3600) // 60:02d}:{timeout.seconds % 60:02d}"
     return timeout_str
+
+
+def get_configured_slurm_timeout_str(cluster_config, partition, with_save_delay: bool = True) -> str | None:
+    """Return a Slurm timeout only when the cluster config explicitly defines one."""
+    timeout_key = partition or cluster_config.get("partition")
+    if timeout_key and timeout_key in cluster_config.get("timeouts", {}):
+        return get_slurm_timeout_str(cluster_config, partition, with_save_delay=with_save_delay)
+
+    if cluster_config.get("default_timeout") is not None:
+        return get_slurm_timeout_str(cluster_config, partition, with_save_delay=with_save_delay)
+
+    return None
 
 
 def kwargs_to_string(kwargs: str | dict) -> dict:
@@ -290,9 +305,32 @@ def temporary_env_update(cluster_config, updates):
         cluster_config["env_vars"] = original_env_vars
 
 
+def get_slurm_runtime(cluster_config: dict) -> str | None:
+    """Validate and normalize the configured Slurm container runtime."""
+    executor = cluster_config.get("executor")
+    runtime = cluster_config.get("runtime")
+
+    if executor != "slurm":
+        if runtime is not None:
+            raise ValueError("The `runtime` field is only supported when `executor: slurm`.")
+        return None
+
+    if runtime is None:
+        runtime = DEFAULT_SLURM_RUNTIME
+        cluster_config["runtime"] = runtime
+
+    if runtime not in SUPPORTED_SLURM_RUNTIMES:
+        supported = ", ".join(SUPPORTED_SLURM_RUNTIMES)
+        raise ValueError(f"Unsupported slurm runtime: {runtime!r}. Supported values: {supported}.")
+
+    return runtime
+
+
 def read_config(config_file):
     with open(config_file, "rt", encoding="utf-8") as fin:
         cluster_config = yaml.safe_load(fin)
+
+    get_slurm_runtime(cluster_config)
 
     # resolve ssh tunnel config
     if "ssh_tunnel" in cluster_config:
@@ -333,6 +371,7 @@ def get_cluster_config(cluster=None, config_dir=None):
     if cluster is not None:
         # check if cluster is a python object instead of a str path, pass through
         if isinstance(cluster, (dict, DictConfig)):
+            get_slurm_runtime(cluster)
             return cluster
 
         # either using the provided config_dir or getting from env var

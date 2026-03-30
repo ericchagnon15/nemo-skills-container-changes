@@ -554,6 +554,28 @@ class TestErrorHandling:
         with pytest.raises(ValueError, match="must have log_dir set"):
             pipeline.run(dry_run=True)
 
+    @patch("nemo_skills.pipeline.utils.declarative.get_env_variables")
+    @patch("nemo_skills.pipeline.utils.declarative.is_mounted_filepath")
+    def test_pipeline_podman_hpc_rejects_multi_component_job(self, mock_is_mounted, mock_env_vars):
+        mock_config = {
+            "executor": "slurm",
+            "runtime": "podman-hpc",
+            "containers": {"nemo-skills": "nersc/nemo-skills:0.1"},
+            "account": "test",
+            "mounts": ["/pscratch/hf:/pscratch/hf"],
+        }
+        mock_env_vars.return_value = {"HF_HOME": "/pscratch/hf"}
+        mock_is_mounted.return_value = True
+
+        cmd1 = make_command(inline="echo 1", name="cmd1")
+        cmd2 = make_command(inline="echo 2", name="cmd2")
+        group = CommandGroup(commands=[cmd1, cmd2], name="group", log_dir="/logs")
+
+        pipeline = Pipeline(name="test", cluster_config=mock_config, jobs=[{"name": "job1", "group": group}])
+
+        with pytest.raises(ValueError, match="single-container jobs only"):
+            pipeline.run(dry_run=True)
+
 
 class TestJobDependencies:
     """Test job dependencies across experiments."""

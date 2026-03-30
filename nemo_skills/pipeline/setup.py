@@ -23,6 +23,7 @@ import yaml
 from nemo_skills import _containers
 from nemo_skills.pipeline.app import app
 from nemo_skills.pipeline.utils import is_mounted_filepath
+from nemo_skills.pipeline.utils.cluster import DEFAULT_SLURM_RUNTIME, SUPPORTED_SLURM_RUNTIMES
 from nemo_skills.pipeline.utils.docker_images import resolve_container_image
 
 
@@ -95,9 +96,20 @@ def setup():
         config = {"executor": config_type}
         if config_type == "local":
             config["containers"] = dict(_containers)
+        elif config_type == "slurm":
+            runtime_choices = "/".join(SUPPORTED_SLURM_RUNTIMES)
+            while True:
+                runtime = typer.prompt(
+                    f"\nWhich Slurm container runtime would you like to use? ({runtime_choices})",
+                    default=DEFAULT_SLURM_RUNTIME,
+                ).lower()
+                if runtime in SUPPORTED_SLURM_RUNTIMES:
+                    config["runtime"] = runtime
+                    break
+                typer.echo(f"Unsupported runtime: {runtime}. Supported values: {runtime_choices}.")
 
         mounts = typer.prompt(
-            "\nWe execute all commands in docker containers, so you need to "
+            "\nWe execute all commands in containers, so you need to "
             f"define what to mount there to access your {config_type} data/models.\n"
             "You don't need to mount nemo-skills or your local git repo, it's always accessible with /nemo_run/code\n"
             "It's usually a good idea to define some mounts for your general workspace (to keep data/output results)\n"
@@ -195,16 +207,33 @@ def setup():
                     "up periodically if you submit many experiments)?",
                 )
             config["account"] = typer.prompt("\nWhat is the slurm account you want to use?")
-            config["partition"] = typer.prompt(
+            partition = typer.prompt(
                 "\nWhat is the default slurm partition you want to use? "
-                "You can always override with --partition argument.",
+                "Leave empty if your cluster does not use partitions or you prefer to override per job.",
+                default="",
             )
+            if partition:
+                config["partition"] = partition
+            qos = typer.prompt(
+                "\nWhat is the default slurm QoS you want to use? "
+                "Leave empty if you prefer to set it per job.",
+                default="",
+            )
+            if qos:
+                config["qos"] = qos
+            constraint = typer.prompt(
+                "\nWhat is the default slurm constraint you want to use? "
+                "Leave empty if you prefer to set it per job.",
+                default="",
+            )
+            if constraint:
+                config["constraint"] = constraint
             config["job_name_prefix"] = ""
             timeouts = typer.prompt(
                 "\nIf your cluster has a strict time limit for each job, we need to "
                 "know the value to be able to save checkpoints before the job is killed.\n"
-                "Specify as partition1=hh:mm:ss;partition2=hh:mm:ss\n"
-                "Leave empty if you don't have time limits.",
+                "Specify as partition1=hh:mm:ss;partition2=hh:mm:ss for partition-specific limits,\n"
+                "or leave empty to use only the default timeout / cluster defaults.",
                 default="",
             )
             if timeouts:
@@ -217,9 +246,10 @@ def setup():
         if config_type == "slurm":
             slurm_comment = (
                 "executor: slurm\n\n"
+                "# runtime defaults to pyxis; set runtime: podman-hpc for NERSC Perlmutter\n\n"
                 "containers:\n"
-                "  # follow steps in https://nvidia-nemo.github.io/Skills/basics/#slurm-inference\n"
-                "  # to complete this section\n\n"
+                "  # for runtime=pyxis, use Pyxis-compatible image refs or sqsh paths\n"
+                "  # for runtime=podman-hpc, use prebuilt podman-hpc image names\n\n"
             )
             yaml_content = yaml_content.replace("executor: slurm\n", slurm_comment)
         with open(config_file, "wt") as fout:
@@ -236,7 +266,8 @@ def setup():
             typer.echo(
                 f"\nCreated {config_type} config file at {config_file}.\n"
                 "We left the containers section empty. Follow the instructions at "
-                "https://nvidia-nemo.github.io/Skills/basics/#slurm-inference to configure your cluster containers."
+                "https://nvidia-nemo.github.io/Skills/basics/#slurm-inference to configure your cluster containers "
+                f"for runtime={config['runtime']}."
             )
 
         if config_type == "local":

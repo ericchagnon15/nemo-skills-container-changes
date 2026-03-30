@@ -16,8 +16,9 @@ import subprocess
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
-from nemo_skills.pipeline.utils import get_mounted_path
+from nemo_skills.pipeline.utils import get_mounted_path, read_config
 from nemo_skills.pipeline.utils.eval import get_benchmark_args_from_module
 
 
@@ -120,3 +121,75 @@ def test_get_benchmark_args_input_file_should_be_local_path_for_executor_none(tm
     assert result.input_file == expected_input_file, (
         f"Expected local path {expected_input_file}, got {result.input_file}"
     )
+
+
+def test_read_config_defaults_slurm_runtime_to_pyxis(tmp_path):
+    config_path = tmp_path / "slurm.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "executor": "slurm",
+                "job_dir": str(tmp_path / "jobs"),
+                "account": "test",
+                "partition": "debug",
+            }
+        )
+    )
+
+    cluster_config = read_config(config_path)
+    assert cluster_config["runtime"] == "pyxis"
+
+
+def test_read_config_rejects_invalid_slurm_runtime(tmp_path):
+    config_path = tmp_path / "slurm.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "executor": "slurm",
+                "runtime": "invalid-runtime",
+                "job_dir": str(tmp_path / "jobs"),
+                "account": "test",
+                "partition": "debug",
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="Unsupported slurm runtime"):
+        read_config(config_path)
+
+
+def test_read_config_rejects_runtime_for_non_slurm(tmp_path):
+    config_path = tmp_path / "local.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "executor": "local",
+                "runtime": "podman-hpc",
+                "containers": {},
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="only supported when `executor: slurm`"):
+        read_config(config_path)
+
+
+def test_read_config_allows_slurm_without_partition(tmp_path):
+    config_path = tmp_path / "slurm.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "executor": "slurm",
+                "job_dir": str(tmp_path / "jobs"),
+                "account": "test",
+                "qos": "regular",
+                "constraint": "gpu",
+            }
+        )
+    )
+
+    cluster_config = read_config(config_path)
+    assert cluster_config["runtime"] == "pyxis"
+    assert "partition" not in cluster_config
+    assert cluster_config["qos"] == "regular"
+    assert cluster_config["constraint"] == "gpu"

@@ -58,6 +58,7 @@ nav:
     - basics/index.md
     - Installation & Dependencies: basics/installation.md
     - Cluster configs: basics/cluster-configs.md
+    - Perlmutter (NERSC): basics/perlmutter.md
     - Code packaging: basics/code-packaging.md
     - Prompt format: basics/prompt-format.md
     - Inference: basics/inference.md

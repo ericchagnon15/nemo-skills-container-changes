@@ -35,9 +35,12 @@ from nemo_skills.pipeline.utils.exp import (
     REUSE_CODE_EXP,
     get_packaging_job_key,
     tunnel_hash,
+    validate_podman_hpc_phase1_support,
+    uses_podman_hpc_runtime,
+    wrap_slurm_command_for_cluster_runtime,
 )
 from nemo_skills.pipeline.utils.mounts import is_mounted_filepath
-from nemo_skills.pipeline.utils.scripts import SandboxScript
+from nemo_skills.pipeline.utils.scripts import SandboxScript, ServerScript
 from nemo_skills.pipeline.utils.server import wrap_python_path
 from nemo_skills.utils import get_logger_name
 
@@ -644,6 +647,15 @@ class Pipeline:
         if log_dir is None:
             raise ValueError(f"CommandGroup '{groups[0].name}' must have log_dir set, or provide it to pipeline.run()")
 
+        all_commands = [command for group in groups for command in group.commands]
+        validate_podman_hpc_phase1_support(
+            cluster_config,
+            num_components=len(all_commands),
+            has_server=any(isinstance(command.script, ServerScript) for command in all_commands),
+            has_sandbox=any(isinstance(command.script, SandboxScript) for command in all_commands),
+            heterogeneous=heterogeneous or len(groups) > 1,
+        )
+
         scripts: List[run.Script] = []
         executors: List = []
         het_group_indices: List[int] = []
@@ -702,14 +714,31 @@ class Pipeline:
             total_het_groups = entry["total_het_groups"]
             overlap = entry["overlap"]
 
-            scripts.append(script)
-
             # Merge shared environment for heterogeneous jobs
             if heterogeneous and shared_env_vars:
                 exec_config["environment"].update(shared_env_vars)
 
             # Resolve container and create executor
             container_image = self._resolve_container(exec_config, command, cluster_config)
+            if uses_podman_hpc_runtime(cluster_config):
+                if not isinstance(script.inline, str):
+                    raise ValueError(
+                        "Slurm runtime 'podman-hpc' currently requires commands to resolve to shell strings."
+                    )
+                effective_env_vars = get_env_variables(cluster_config).copy()
+                effective_env_vars.update(exec_config.get("environment", {}))
+                script.set_inline(
+                    wrap_slurm_command_for_cluster_runtime(
+                        cluster_config,
+                        script.inline,
+                        container=container_image,
+                        gpus_per_node=group.hardware.num_gpus if group.hardware else 0,
+                        mounts=exec_config.get("mounts"),
+                        env_vars=effective_env_vars,
+                    )
+                )
+
+            scripts.append(script)
             # Pass external dependencies only to the first executor (SLURM doesn't support per-component dependencies in hetjobs)
             exec_dependencies = external_deps if (het_idx == 0 and comp_idx == 0) else None
 

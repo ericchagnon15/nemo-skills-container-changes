@@ -15,6 +15,8 @@
 # importing every utility function here to make them available in the pipeline.utils namespace
 
 from nemo_skills.pipeline.utils.cluster import (
+    DEFAULT_SLURM_RUNTIME,
+    SUPPORTED_SLURM_RUNTIMES,
     _get_tunnel_cached,
     cluster_download_dir,
     cluster_download_file,
@@ -22,6 +24,7 @@ from nemo_skills.pipeline.utils.cluster import (
     cluster_upload,
     get_cluster_config,
     get_env_variables,
+    get_slurm_runtime,
     get_slurm_timeout_str,
     get_timeout_str,
     get_tunnel,

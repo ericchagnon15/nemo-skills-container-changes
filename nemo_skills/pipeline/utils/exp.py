@@ -29,8 +29,9 @@ from nemo_run.core.execution.slurm import SlurmJobDetails, get_packaging_job_key
 from torchx.specs.api import AppState
 
 from nemo_skills.pipeline.utils.cluster import (
+    get_configured_slurm_timeout_str,
     get_env_variables,
-    get_slurm_timeout_str,
+    get_slurm_runtime,
     get_tunnel,
     temporary_env_update,
     tunnel_hash,
@@ -50,6 +51,9 @@ from nemo_skills.pipeline.utils.server import get_free_port, get_server_command
 from nemo_skills.utils import get_logger_name, remove_handlers
 
 LOG = logging.getLogger(get_logger_name(__file__))
+
+_DOCKERFILE_PREFIX = "dockerfile:"
+_PODMAN_HPC_RUNTIME = "podman-hpc"
 
 
 # keeping a global variable for first submitted experiment (per cluster) and reusing it by default
@@ -158,6 +162,81 @@ class CustomJobDetailsRay(CustomJobDetails):
         return os.path.join(self.folder, "ray-%j-job*")
 
 
+def uses_podman_hpc_runtime(cluster_config: dict) -> bool:
+    return cluster_config.get("executor") == "slurm" and get_slurm_runtime(cluster_config) == _PODMAN_HPC_RUNTIME
+
+
+def validate_podman_hpc_phase1_support(
+    cluster_config: dict,
+    *,
+    num_components: int,
+    has_server: bool,
+    has_sandbox: bool,
+    heterogeneous: bool,
+):
+    """Reject Slurm podman-hpc workloads outside the supported Phase 1 shape."""
+    if not uses_podman_hpc_runtime(cluster_config):
+        return
+
+    limitations = []
+    if num_components != 1:
+        limitations.append("only single-component jobs are supported")
+    if has_server:
+        limitations.append("hosted server containers are not supported yet")
+    if has_sandbox:
+        limitations.append("sandbox containers are not supported yet")
+    if heterogeneous:
+        limitations.append("heterogeneous jobs are not supported yet")
+
+    if limitations:
+        raise ValueError(
+            "Slurm runtime 'podman-hpc' currently supports single-container jobs only in Phase 1: "
+            + "; ".join(limitations)
+            + "."
+        )
+
+
+def _validate_podman_hpc_container(container: str):
+    if container.startswith(_DOCKERFILE_PREFIX):
+        raise ValueError(
+            "Slurm runtime 'podman-hpc' does not support dockerfile container specs. "
+            "Prebuild the image with podman-hpc, run `podman-hpc migrate`, and reference the image name directly."
+        )
+
+
+def wrap_slurm_command_for_cluster_runtime(
+    cluster_config: dict,
+    command: str,
+    *,
+    container: str,
+    gpus_per_node: int | None,
+    mounts: list[str] | None = None,
+    env_vars: dict[str, str] | None = None,
+) -> str:
+    """Wrap a Slurm command for the configured container runtime."""
+    if not uses_podman_hpc_runtime(cluster_config):
+        return command
+
+    _validate_podman_hpc_container(container)
+
+    mounts = mounts if mounts is not None else get_mounts_from_config(cluster_config)
+    env_vars = env_vars or {}
+
+    parts = ["podman-hpc", "run", "--rm"]
+    if gpus_per_node:
+        parts.append("--gpu")
+    parts.extend(
+        [
+            '-w "$PWD"',
+            '-v "$(dirname "$PWD"):$(dirname "$PWD")"',
+        ]
+    )
+    parts.extend(f"-v {shlex.quote(mount)}" for mount in mounts)
+    parts.extend(f'-e {key}="${key}"' for key in sorted(env_vars))
+    parts.extend([shlex.quote(container), "bash", "-lc", shlex.quote(command)])
+    return " ".join(parts)
+
+
 def get_executor(
     cluster_config,
     container,
@@ -197,8 +276,8 @@ def get_executor(
 
     Args:
         cluster_config: Cluster configuration. Must define `executor` and typically
-            includes `account`, `partition`/`cpu_partition`, `env_vars`, optional
-            `dependency_type`, and default mounts.
+            includes `account`, optional `partition`/`cpu_partition`, optional
+            `qos`/`constraint`, `env_vars`, optional `dependency_type`, and default mounts.
         container: Container image to use. Resolved for local Docker; passed through
             for SLURM.
         num_nodes: Number of nodes to allocate.
@@ -236,6 +315,7 @@ def get_executor(
     """
     env_vars = get_env_variables(cluster_config)
     config_mounts = get_mounts_from_config(cluster_config)
+    slurm_runtime = get_slurm_runtime(cluster_config) if cluster_config["executor"] == "slurm" else None
 
     if mounts is None:
         mounts = config_mounts
@@ -286,14 +366,15 @@ def get_executor(
         partition = partition or cluster_config.get("partition")
     else:
         partition = partition or cluster_config.get("cpu_partition") or cluster_config.get("partition")
-        if partition == cluster_config.get("cpu_partition"):
+        cpu_partition = cluster_config.get("cpu_partition")
+        if cpu_partition and partition == cpu_partition:
             # by default we use exclusive if no gpus are needed and use non-exclusive if gpus are required
             # as cpu jobs almost always need more resources than automatically allocated by slurm
             if sbatch_kwargs is None:
                 sbatch_kwargs = {}
             sbatch_kwargs["exclusive"] = True
 
-    timeout = get_slurm_timeout_str(cluster_config, partition, with_save_delay=False)
+    timeout = get_configured_slurm_timeout_str(cluster_config, partition, with_save_delay=False)
 
     additional_parameters = {}
     if cluster_config.get("mail_type") is not None:
@@ -314,16 +395,26 @@ def get_executor(
     else:
         explicit_kwargs = {}
 
-    srun_args = [
-        "--no-container-mount-home",
-        "--mpi=pmix",
-        "--wait=10",
-        # we need to be explicit about this in srun as commands might need to run in parallel
-        f"--ntasks-per-node={tasks_per_node}",
-        f"--nodes={num_nodes}",
-        # NeMo-run should take care of this, but we'll put it here temporarily
-        f"--container-env={','.join([k.strip() for k in env_vars.keys()])}",
-    ]
+    if slurm_runtime == _PODMAN_HPC_RUNTIME:
+        _validate_podman_hpc_container(container)
+        srun_args = [
+            "--mpi=pmix",
+            "--wait=10",
+            # we need to be explicit about this in srun as commands might need to run in parallel
+            f"--ntasks-per-node={tasks_per_node}",
+            f"--nodes={num_nodes}",
+        ]
+    else:
+        srun_args = [
+            "--no-container-mount-home",
+            "--mpi=pmix",
+            "--wait=10",
+            # we need to be explicit about this in srun as commands might need to run in parallel
+            f"--ntasks-per-node={tasks_per_node}",
+            f"--nodes={num_nodes}",
+            # NeMo-run should take care of this, but we'll put it here temporarily
+            f"--container-env={','.join([k.strip() for k in env_vars.keys()])}",
+        ]
     if overlap:
         srun_args.append("--overlap")
     if not cluster_config.get("disable_gpus_per_node", False) and gpus_per_node is not None:
@@ -341,12 +432,13 @@ def get_executor(
     executor_params = {
         "account": account,
         "partition": partition,
+        "qos": cluster_config.get("qos"),
+        "constraint": cluster_config.get("constraint"),
         "nodes": num_nodes,
         "ntasks_per_node": tasks_per_node,
         "tunnel": get_tunnel(cluster_config),
-        "container_image": container,
-        "container_mounts": mounts,
-        "time": timeout,
+        "container_image": None if slurm_runtime == _PODMAN_HPC_RUNTIME else container,
+        "container_mounts": [] if slurm_runtime == _PODMAN_HPC_RUNTIME else mounts,
         "additional_parameters": additional_parameters,
         "packager": packager,
         "gpus_per_node": gpus_per_node if not cluster_config.get("disable_gpus_per_node", False) else None,
@@ -368,6 +460,9 @@ def get_executor(
     # Add ray_template if provided
     if ray_template is not None:
         executor_params["ray_template"] = ray_template
+
+    if timeout is not None:
+        executor_params["time"] = timeout
 
     # Disable polling estimated start time if it is implemented in this version of NeMo-Run
     if hasattr(run.SlurmExecutor, "poll_estimated_start_time"):
@@ -534,6 +629,14 @@ def add_task(
     het_group = 0
     het_group_indices = []
     total_het_groups = (n_servers if server_config is not None else 0) + bool(cmd) + with_sandbox
+    num_main_components = 0 if not cmd else (1 if isinstance(cmd, str) else len(cmd))
+    validate_podman_hpc_phase1_support(
+        cluster_config,
+        num_components=num_main_components + (n_servers if server_config is not None else 0) + int(with_sandbox),
+        has_server=server_config is not None,
+        has_sandbox=with_sandbox,
+        heterogeneous=heterogeneous,
+    )
 
     LOG.info("Adding a task with commands:")
 
@@ -609,6 +712,13 @@ def add_task(
                 cur_cmd = f"mpirun --allow-run-as-root -np {cur_tasks} bash -c {shlex.quote(cur_cmd)}"
             with temporary_env_update(cluster_config, {"NEMO_SKILLS_SANDBOX_PORT": sandbox_port}):
                 cur_cmd = install_packages_wrap(cur_cmd, installation_command)
+                cur_cmd = wrap_slurm_command_for_cluster_runtime(
+                    cluster_config,
+                    cur_cmd,
+                    container=cur_container,
+                    gpus_per_node=num_gpus if (server_config is None or num_nodes > 1) else 0,
+                    env_vars=get_env_variables(cluster_config),
+                )
                 commands.append(cur_cmd)
                 client_num_gpus = num_gpus if (server_config is None or num_nodes > 1) else 0
                 executors.append(

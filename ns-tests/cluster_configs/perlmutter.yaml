@@ -1,0 +1,24 @@
+executor: slurm
+runtime: podman-hpc
+
+ssh_tunnel:
+  host: perlmutter.nersc.gov
+  user: <nersc_user>
+  identity: /Users/<local_user>/.ssh/nersc-cert.pub
+  job_dir: /pscratch/sd/<first-letter>/<nersc_user>/nemo-run
+
+containers:
+  nemo-skills: nemo-skills-api:0.1
+
+account: <nersc_account>
+qos: <nersc_qos>
+constraint: <nersc_constraint>
+nodes: 1
+ntasks_per_node: 1
+default_timeout: "00:20:00"
+
+mounts:
+  - /pscratch/sd/<first-letter>/<nersc_user>/ns-api-demo:/workspace
+
+env_vars:
+  - HF_HOME=/workspace/hf-cache

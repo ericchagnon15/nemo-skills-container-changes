@@ -13,10 +13,14 @@
 # limitations under the License.
 
 executor: slurm
+# runtime defaults to pyxis if omitted.
+# Set runtime: podman-hpc on NERSC Perlmutter to launch jobs with podman-hpc instead of Pyxis.
+# runtime: pyxis
 
 containers:
-  # follow steps in https://nvidia-nemo.github.io/Skills/basics/#slurm-inference
-  # to complete this section
+  # for runtime=pyxis, use Pyxis-compatible refs or sqsh image paths
+  # for runtime=podman-hpc, use prebuilt podman-hpc image names
+  # podman-hpc Phase 1 supports only single-container jobs (e.g. run_cmd or generate against a pre-hosted server)
 
 job_name_prefix: "nemo_skills:"
 # define this for ssh access
@@ -29,9 +33,11 @@ job_name_prefix: "nemo_skills:"
 # if you're running directly from cluster, you only need to define job_dir and shouldn't use ssh_tunnel
 # job_dir: <some location on slurm cluster to keep job metadata, uploaded code and generated sbatch files>
 
-# define your account/partition here
+# define your default Slurm settings here
 # account: <slurm account>
-# partition: <slurm partition>
+# qos: <slurm qos>
+# constraint: <slurm constraint>
+# partition: <slurm partition, if your cluster uses partitions>
 # cpu_partition: <if cluster has a dedicated cpu partition, you can define it here>
 
 # add required mounts for models/data here

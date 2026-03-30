@@ -16,7 +16,10 @@ import os
 import tempfile
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from nemo_skills.pipeline.utils.declarative import Command
+from nemo_skills.pipeline.utils.exp import add_task, get_executor, wrap_slurm_command_for_cluster_runtime
 from nemo_skills.pipeline.utils.generation import (
     get_chunked_rs_filename,
     get_expected_done_files,
@@ -200,6 +203,222 @@ def test_slurm_execution(mock_get_tunnel):
         assert mock_get_tunnel.called
         assert 10 in remaining[0]
         assert 20 in remaining[1]
+
+
+def test_wrap_slurm_command_for_podman_hpc():
+    cluster_config = {
+        "executor": "slurm",
+        "runtime": "podman-hpc",
+        "mounts": ["/pscratch/work:/workspace", "/pscratch/models:/models"],
+    }
+
+    wrapped = wrap_slurm_command_for_cluster_runtime(
+        cluster_config,
+        "cd /nemo_run/code && python -m nemo_skills.pipeline.run_cmd",
+        container="nersc/nemo-skills:0.1",
+        gpus_per_node=4,
+        env_vars={"HF_HOME": "/models", "OPENAI_API_KEY": "secret"},
+    )
+
+    assert wrapped.startswith("podman-hpc run --rm --gpu")
+    assert '-w "$PWD"' in wrapped
+    assert '-v "$(dirname "$PWD"):$(dirname "$PWD")"' in wrapped
+    assert "-v /pscratch/work:/workspace" in wrapped
+    assert '-e HF_HOME="$HF_HOME"' in wrapped
+    assert "nersc/nemo-skills:0.1 bash -lc " in wrapped
+
+
+@patch("nemo_skills.pipeline.utils.exp.get_packager")
+@patch("nemo_skills.pipeline.utils.exp.get_tunnel")
+@patch("nemo_skills.pipeline.utils.exp.run.SlurmExecutor")
+def test_get_executor_keeps_pyxis_container_flags(mock_slurm_executor, mock_get_tunnel, mock_get_packager):
+    mock_slurm_executor.return_value = MagicMock()
+    mock_get_tunnel.return_value = MagicMock()
+    mock_get_packager.return_value = MagicMock()
+
+    cluster_config = {
+        "executor": "slurm",
+        "runtime": "pyxis",
+        "account": "test",
+        "partition": "debug",
+        "mounts": ["/pscratch/work:/workspace"],
+        "env_vars": ["HF_HOME=/workspace/hf"],
+    }
+
+    get_executor(
+        cluster_config=cluster_config,
+        container="/images/nemo-skills.sqsh",
+        num_nodes=1,
+        tasks_per_node=1,
+        gpus_per_node=1,
+        job_name="test-job",
+        log_dir="/workspace/logs",
+    )
+
+    kwargs = mock_slurm_executor.call_args.kwargs
+    assert kwargs["container_image"] == "/images/nemo-skills.sqsh"
+    assert kwargs["container_mounts"] == ["/pscratch/work:/workspace"]
+    assert "--no-container-mount-home" in kwargs["srun_args"]
+    assert any(arg.startswith("--container-env=") for arg in kwargs["srun_args"])
+
+
+@patch("nemo_skills.pipeline.utils.exp.get_packager")
+@patch("nemo_skills.pipeline.utils.exp.get_tunnel")
+@patch("nemo_skills.pipeline.utils.exp.run.SlurmExecutor")
+def test_get_executor_podman_hpc_omits_pyxis_container_flags(mock_slurm_executor, mock_get_tunnel, mock_get_packager):
+    mock_slurm_executor.return_value = MagicMock()
+    mock_get_tunnel.return_value = MagicMock()
+    mock_get_packager.return_value = MagicMock()
+
+    cluster_config = {
+        "executor": "slurm",
+        "runtime": "podman-hpc",
+        "account": "test",
+        "partition": "debug",
+        "mounts": ["/pscratch/work:/workspace"],
+        "env_vars": ["HF_HOME=/workspace/hf"],
+    }
+
+    get_executor(
+        cluster_config=cluster_config,
+        container="nersc/nemo-skills:0.1",
+        num_nodes=1,
+        tasks_per_node=1,
+        gpus_per_node=1,
+        job_name="test-job",
+        log_dir="/workspace/logs",
+    )
+
+    kwargs = mock_slurm_executor.call_args.kwargs
+    assert kwargs["container_image"] is None
+    assert kwargs["container_mounts"] == []
+    assert "--no-container-mount-home" not in kwargs["srun_args"]
+    assert not any(arg.startswith("--container-env=") for arg in kwargs["srun_args"])
+
+
+@patch("nemo_skills.pipeline.utils.exp.get_packager")
+@patch("nemo_skills.pipeline.utils.exp.get_tunnel")
+@patch("nemo_skills.pipeline.utils.exp.run.SlurmExecutor")
+def test_get_executor_uses_cluster_default_qos_constraint_without_partition(
+    mock_slurm_executor, mock_get_tunnel, mock_get_packager
+):
+    mock_slurm_executor.return_value = MagicMock()
+    mock_get_tunnel.return_value = MagicMock()
+    mock_get_packager.return_value = MagicMock()
+
+    cluster_config = {
+        "executor": "slurm",
+        "runtime": "podman-hpc",
+        "account": "test",
+        "qos": "regular",
+        "constraint": "gpu",
+        "mounts": ["/pscratch/work:/workspace"],
+        "env_vars": ["HF_HOME=/workspace/hf"],
+    }
+
+    get_executor(
+        cluster_config=cluster_config,
+        container="nersc/nemo-skills:0.1",
+        num_nodes=1,
+        tasks_per_node=1,
+        gpus_per_node=1,
+        job_name="test-job",
+        log_dir="/workspace/logs",
+    )
+
+    kwargs = mock_slurm_executor.call_args.kwargs
+    assert kwargs["partition"] is None
+    assert kwargs["qos"] == "regular"
+    assert kwargs["constraint"] == "gpu"
+
+
+@patch("nemo_skills.pipeline.utils.exp.get_packager")
+@patch("nemo_skills.pipeline.utils.exp.get_tunnel")
+@patch("nemo_skills.pipeline.utils.exp.run.SlurmExecutor")
+def test_get_executor_without_configured_timeout_uses_slurm_default_timeout(
+    mock_slurm_executor, mock_get_tunnel, mock_get_packager
+):
+    mock_slurm_executor.return_value = MagicMock()
+    mock_get_tunnel.return_value = MagicMock()
+    mock_get_packager.return_value = MagicMock()
+
+    cluster_config = {
+        "executor": "slurm",
+        "runtime": "podman-hpc",
+        "account": "test",
+        "mounts": ["/pscratch/work:/workspace"],
+        "env_vars": ["HF_HOME=/workspace/hf"],
+    }
+
+    get_executor(
+        cluster_config=cluster_config,
+        container="nersc/nemo-skills:0.1",
+        num_nodes=1,
+        tasks_per_node=1,
+        gpus_per_node=0,
+        job_name="test-job",
+        log_dir="/workspace/logs",
+    )
+
+    kwargs = mock_slurm_executor.call_args.kwargs
+    assert "time" not in kwargs
+    assert "exclusive" not in kwargs
+
+
+def test_get_executor_podman_hpc_rejects_dockerfile_container():
+    cluster_config = {
+        "executor": "slurm",
+        "runtime": "podman-hpc",
+        "account": "test",
+        "partition": "debug",
+        "mounts": ["/pscratch/work:/workspace"],
+        "env_vars": ["HF_HOME=/workspace/hf"],
+    }
+
+    with pytest.raises(ValueError, match="does not support dockerfile container specs"):
+        get_executor(
+            cluster_config=cluster_config,
+            container="dockerfile:dockerfiles/Dockerfile.nemo-skills",
+            num_nodes=1,
+            tasks_per_node=1,
+            gpus_per_node=1,
+            job_name="test-job",
+            log_dir="/workspace/logs",
+        )
+
+
+@patch("nemo_skills.pipeline.utils.exp.get_executor")
+@patch("nemo_skills.pipeline.utils.exp.get_env_variables")
+@patch("nemo_skills.pipeline.utils.exp.is_mounted_filepath")
+def test_add_task_wraps_imperative_command_for_podman_hpc(mock_is_mounted, mock_get_env_vars, mock_get_executor):
+    mock_is_mounted.return_value = True
+    mock_get_env_vars.return_value = {"HF_HOME": "/workspace/hf"}
+    mock_get_executor.return_value = MagicMock(nodes=1, packager=MagicMock())
+
+    exp = MagicMock()
+    exp.add.return_value = "task-handle"
+
+    cluster_config = {
+        "executor": "slurm",
+        "runtime": "podman-hpc",
+        "account": "test",
+        "partition": "debug",
+        "mounts": ["/pscratch/work:/workspace"],
+        "env_vars": ["HF_HOME=/workspace/hf"],
+    }
+
+    add_task(
+        exp,
+        cmd="echo test",
+        task_name="test-task",
+        cluster_config=cluster_config,
+        container="nersc/nemo-skills:0.1",
+        log_dir="/workspace/logs",
+        reuse_code=False,
+    )
+
+    script = exp.add.call_args.args[0]
+    assert "podman-hpc run --rm" in script.inline
 
 
 def test_separate_hydra_args_empty():

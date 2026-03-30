@@ -1,0 +1,4 @@
+export MODEL_NAME=nemotron-nano-3
+export OPENAI_BASE_URL=https://your-openai-compatible-endpoint.example/v1
+export OPENAI_API_KEY=replace-me
+export NVIDIA_API_KEY="$OPENAI_API_KEY"
