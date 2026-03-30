@@ -1,5 +1,27 @@
 # Nemo Skills
 
+## Perlmutter Fork
+
+This repository is the Perlmutter-enabled variant of `nemo-skills` used to run jobs on NERSC Perlmutter from a local workstation.
+
+The main reason for this fork is that the stock Slurm path assumes a Pyxis-style container flow, while Perlmutter needs a `podman-hpc`-based execution path. This repo adds the missing runtime support and documents the operational workflow needed to make that path usable.
+
+What changed here:
+
+- Slurm configs now support `runtime: podman-hpc` in addition to `pyxis`
+- Slurm cluster configs can omit `partition` and instead use `account`, `qos`, and `constraint`
+- job submission avoids forcing an implicit 100-day walltime when no timeout was configured
+- commands are wrapped so single-container Slurm jobs can launch through `podman-hpc run`
+- unsupported Phase 1 shapes are rejected early, including sidecars, heterogeneous jobs, and `dockerfile:...` container specs
+- docs and tests were added for the Perlmutter-specific path
+
+Where to look:
+
+- [docs/basics/perlmutter.md](docs/basics/perlmutter.md) explains the Perlmutter workflow and summarizes the implementation changes by file
+- [ns-tests/README.md](ns-tests/README.md) describes the repo-local smoke-test assets for Perlmutter
+- [ns-tests/cluster_configs/perlmutter.yaml](ns-tests/cluster_configs/perlmutter.yaml) is the starter cluster config
+- [ns-tests/test_api_perlmutter.sh](ns-tests/test_api_perlmutter.sh) is the minimal API-backed generation smoke test
+
 Nemo-Skills is a collection of pipelines to improve "skills" of large language models (LLMs). We support everything needed for LLM development, from synthetic data generation, to model training, to evaluation on a wide range of benchmarks. Start developing on a local workstation and move to a large-scale Slurm cluster with just a one-line change.
 
 
