@@ -23,19 +23,22 @@ import yaml
 from nemo_skills import _containers
 from nemo_skills.pipeline.app import app
 from nemo_skills.pipeline.utils import is_mounted_filepath
+from nemo_skills.pipeline.utils.container_engine import get_container_engine
 from nemo_skills.pipeline.utils.docker_images import resolve_container_image
 
 
-def is_docker_available():
+def is_container_engine_available():
     try:
-        subprocess.run(["docker", "--version"], check=True, capture_output=True)
+        engine = get_container_engine()
+        subprocess.run([engine, "--version"], check=True, capture_output=True)
         return True
     except subprocess.SubprocessError:
         return False
 
 
-# Helper function to pull Docker containers
-def pull_docker_containers(containers):
+# Helper function to pull containers
+def pull_containers(containers):
+    engine = get_container_engine()
     for container_name, container_image in containers.items():
         if container_image.startswith("dockerfile:"):
             typer.echo(f"Building {container_name} from {container_image}...")
@@ -47,7 +50,7 @@ def pull_docker_containers(containers):
         else:
             typer.echo(f"Pulling {container_name}: {container_image}...")
             try:
-                subprocess.run(["docker", "pull", container_image], check=True)
+                subprocess.run([engine, "pull", container_image], check=True)
                 typer.echo(f"Successfully pulled {container_image}")
             except subprocess.SubprocessError as e:
                 typer.echo(f"Failed to pull {container_image}: {e}")
@@ -240,21 +243,22 @@ def setup():
             )
 
         if config_type == "local":
-            pull_containers = typer.confirm(
-                "\nWould you like to pull/build all the necessary Docker containers now? "
+            engine = get_container_engine()
+            pull_containers_confirm = typer.confirm(
+                f"\nWould you like to pull/build all the necessary {engine} containers now? "
                 "This might take some time but ensures everything is ready to use.\n"
                 "You can skip this step and we will pull/build the containers automatically when you run the first job.",
                 default=True,
             )
 
-            if pull_containers:
-                if is_docker_available():
-                    typer.echo("\nPulling Docker containers...")
-                    pull_docker_containers(config["containers"])
+            if pull_containers_confirm:
+                if is_container_engine_available():
+                    typer.echo(f"\nPulling {engine} containers...")
+                    pull_containers(config["containers"])
                     typer.echo("All containers have been pulled!")
                 else:
                     typer.echo(
-                        "\nDocker does not seem to be available on your system. Please ensure Docker is installed."
+                        f"\n{engine} does not seem to be available on your system. Please ensure {engine} is installed."
                     )
 
         # Ask if the user wants to create another config

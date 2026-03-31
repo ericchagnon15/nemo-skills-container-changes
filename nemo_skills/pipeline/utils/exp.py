@@ -36,12 +36,41 @@ from nemo_skills.pipeline.utils.cluster import (
     tunnel_hash,
 )
 from nemo_skills.pipeline.utils.docker_images import resolve_container_image
+from nemo_skills.pipeline.utils.container_engine import get_container_engine
 from nemo_skills.pipeline.utils.mounts import (
     check_remote_mount_directories,
     get_mounts_from_config,
     get_unmounted_path,
     is_mounted_filepath,
 )
+
+
+def wrap_with_container(cmd, container, cluster_config, mounts=None, env_vars=None):
+    """Wraps a command with the container engine run command for local execution."""
+    engine = get_container_engine()
+    if engine == "docker":
+        return cmd
+
+    mounts = mounts or get_mounts_from_config(cluster_config)
+    env_vars = env_vars or get_env_variables(cluster_config)
+
+    mount_args = ""
+    for m in mounts:
+        mount_args += f" -v {m} "
+
+    # adding nemo_run mount if it's not already there
+    if not any("/nemo_run/code" in m for m in mounts):
+        mount_args += f" -v {os.getcwd()}:/nemo_run/code "
+
+    env_args = ""
+    for k, v in env_vars.items():
+        env_args += f" -e {k}={shlex.quote(str(v))} "
+
+    container_cmd = (
+        f"{engine} run --rm --network=host --ipc=host "
+        f"{mount_args} {env_args} {container} bash -c {shlex.quote(cmd)}"
+    )
+    return container_cmd
 from nemo_skills.pipeline.utils.packager import (
     get_packager,
     get_registered_external_repo,
@@ -50,6 +79,19 @@ from nemo_skills.pipeline.utils.server import get_free_port, get_server_command
 from nemo_skills.utils import get_logger_name, remove_handlers
 
 LOG = logging.getLogger(get_logger_name(__file__))
+
+
+# On NERSC Perlmutter compute nodes, Lustre/GPFS does not reliably support fcntl.flock
+# when called from a compute node. We force NEMO_RUN_HOME to /dev/shm if it's not set.
+if (
+    os.environ.get("NERSC_HOST") == "perlmutter"
+    and os.environ.get("SLURM_JOB_ID")
+    and not os.environ.get("NEMO_RUN_HOME")
+):
+    _nemo_run_home = f"/dev/shm/{os.environ.get('USER')}/.nemo_run"
+    os.makedirs(_nemo_run_home, exist_ok=True)
+    os.environ["NEMO_RUN_HOME"] = _nemo_run_home
+    LOG.info("Setting NEMO_RUN_HOME to %s to support file locking on compute node", _nemo_run_home)
 
 
 # keeping a global variable for first submitted experiment (per cluster) and reusing it by default
@@ -237,6 +279,19 @@ def get_executor(
     env_vars = get_env_variables(cluster_config)
     config_mounts = get_mounts_from_config(cluster_config)
 
+    if sbatch_kwargs is None:
+        sbatch_kwargs = cluster_config.get("sbatch_kwargs", {})
+    
+    if isinstance(sbatch_kwargs, str) and sbatch_kwargs:
+        import json
+        try:
+            sbatch_kwargs = json.loads(sbatch_kwargs)
+        except json.JSONDecodeError:
+            LOG.warning("Failed to decode sbatch_kwargs string, using empty dict")
+            sbatch_kwargs = {}
+
+    LOG.info("Using sbatch_kwargs: %s", sbatch_kwargs)
+
     if mounts is None:
         mounts = config_mounts
     if extra_package_dirs is not None:
@@ -251,6 +306,11 @@ def get_executor(
         return LocalExecutor()
 
     if cluster_config["executor"] == "local":
+        engine = get_container_engine()
+        if engine != "docker":
+            LOG.info("Using %s engine for local execution via LocalExecutor", engine)
+            return LocalExecutor()
+
         env_vars["PYTHONUNBUFFERED"] = "1"  # this makes sure logs are streamed right away
         resolved_container = resolve_container_image(container, cluster_config)
         return DockerExecutor(
@@ -584,6 +644,14 @@ def add_task(
             cmd_to_add = server_cmd
             if cluster_config["executor"] != "slurm" and num_server_tasks > 1:
                 cmd_to_add = f"mpirun --allow-run-as-root -np {num_server_tasks} bash -c {shlex.quote(server_cmd)}"
+
+            if cluster_config["executor"] == "local" and isinstance(server_executor, LocalExecutor):
+                cmd_to_add = wrap_with_container(
+                    cmd_to_add,
+                    container=server_container,
+                    cluster_config=cluster_config,
+                )
+
             commands.append(cmd_to_add)
             executors.append(server_executor)
             het_group_indices.append(het_group)
@@ -609,31 +677,37 @@ def add_task(
                 cur_cmd = f"mpirun --allow-run-as-root -np {cur_tasks} bash -c {shlex.quote(cur_cmd)}"
             with temporary_env_update(cluster_config, {"NEMO_SKILLS_SANDBOX_PORT": sandbox_port}):
                 cur_cmd = install_packages_wrap(cur_cmd, installation_command)
-                commands.append(cur_cmd)
-                client_num_gpus = num_gpus if (server_config is None or num_nodes > 1) else 0
-                executors.append(
-                    get_executor(
-                        cluster_config=cluster_config,
-                        container=cur_container,
-                        num_nodes=num_nodes,
-                        tasks_per_node=cur_tasks,
-                        gpus_per_node=client_num_gpus,
-                        partition=partition,
-                        account=account,
-                        dependencies=dependencies,
-                        job_name=task_name,
-                        log_dir=log_dir,
-                        log_prefix="main" if len(cmd) == 1 else f"main_{cur_idx}",
-                        extra_package_dirs=extra_package_dirs,
-                        sbatch_kwargs=sbatch_kwargs,
-                        heterogeneous=heterogeneous,
-                        het_group=het_group,
-                        total_het_groups=total_het_groups,
-                        overlap=(not client_num_gpus),  # Only when the main task does not have gpus
-                        with_ray=with_ray,
-                        ray_template=ray_template,
-                    )
+                cur_executor = get_executor(
+                    cluster_config=cluster_config,
+                    container=cur_container,
+                    num_nodes=num_nodes,
+                    tasks_per_node=cur_tasks,
+                    gpus_per_node=client_num_gpus,
+                    partition=partition,
+                    account=account,
+                    dependencies=dependencies,
+                    job_name=task_name,
+                    log_dir=log_dir,
+                    log_prefix="main" if len(cmd) == 1 else f"main_{cur_idx}",
+                    extra_package_dirs=extra_package_dirs,
+                    sbatch_kwargs=sbatch_kwargs,
+                    heterogeneous=heterogeneous,
+                    het_group=het_group,
+                    total_het_groups=total_het_groups,
+                    overlap=(not client_num_gpus),  # Only when the main task does not have gpus
+                    with_ray=with_ray,
+                    ray_template=ray_template,
                 )
+
+                if cluster_config["executor"] == "local" and isinstance(cur_executor, LocalExecutor):
+                    cur_cmd = wrap_with_container(
+                        cur_cmd,
+                        container=cur_container,
+                        cluster_config=cluster_config,
+                    )
+
+                commands.append(cur_cmd)
+                executors.append(cur_executor)
                 het_group_indices.append(het_group)
         het_group += 1
         LOG.info("Main command(s): %s", ", ".join(cmd))
@@ -656,10 +730,11 @@ def add_task(
                 sandbox_env_updates["PYTHONPATH"] = override + ":/app"
 
         with temporary_env_update(cluster_config, sandbox_env_updates):
-            commands.append(get_sandbox_command(cluster_config))
+            sandbox_cmd = get_sandbox_command(cluster_config)
+            sandbox_container_image = sandbox_container or cluster_config["containers"]["sandbox"]
             sandbox_executor = get_executor(
                 cluster_config=cluster_config,
-                container=sandbox_container or cluster_config["containers"]["sandbox"],
+                container=sandbox_container_image,
                 num_nodes=executors[0].nodes if cluster_config["executor"] == "slurm" else 1,
                 tasks_per_node=1,
                 gpus_per_node=0,
@@ -691,6 +766,16 @@ def add_task(
                 # this sidecar step.
                 extra_srun_args=["--kill-on-bad-exit=0", "--mpi=none"],
             )
+
+            if cluster_config["executor"] == "local" and isinstance(sandbox_executor, LocalExecutor):
+                sandbox_cmd = wrap_with_container(
+                    sandbox_cmd,
+                    container=sandbox_container_image,
+                    cluster_config=cluster_config,
+                    mounts=None if keep_mounts_for_sandbox else [],
+                )
+
+            commands.append(sandbox_cmd)
             executors.append(sandbox_executor)
             het_group_indices.append(het_group)
         het_group += 1

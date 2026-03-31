@@ -103,7 +103,9 @@ if [[ ${__is_git_repo} -eq 1 ]]; then
     popd > /dev/null
 fi
 
-echo "Building ${DOCKER_NAME}:${DOCKER_TAG} from context ${__context_dir}"
+__container_engine=${NEMO_SKILLS_CONTAINER_ENGINE:-"docker"}
+
+echo "Building ${DOCKER_NAME}:${DOCKER_TAG} from context ${__context_dir} using ${__container_engine}"
 
 if [[ ! -z ${DOCKER_PUSH} ]]; then
     __docker_build_args="${__docker_build_args} --push"
@@ -115,7 +117,7 @@ if [[ ! -z ${DOCKER_PLATFORM} ]]; then
     __docker_build_args="${__docker_build_args} --platform ${DOCKER_PLATFORM}"
 fi
 
-docker build ${__docker_build_args} \
+${__container_engine} build ${__docker_build_args} \
     -f "${__dockerfile}" \
     -t "${DOCKER_NAME}:${DOCKER_TAG}" \
     "${__context_dir}"

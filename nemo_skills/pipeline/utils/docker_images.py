@@ -18,6 +18,7 @@ import re
 import subprocess
 from pathlib import Path
 
+from nemo_skills.pipeline.utils.container_engine import get_container_engine
 from nemo_skills.utils import get_logger_name
 
 LOG = logging.getLogger(get_logger_name(__file__))
@@ -53,6 +54,7 @@ def _resolve_dockerfile_path(dockerfile_path_str: str) -> Path:
 
 
 def _build_local_docker_image(dockerfile_spec: str) -> str:
+    engine = get_container_engine()
     dockerfile_path = _resolve_dockerfile_path(dockerfile_spec)
     rel_identifier = dockerfile_path.relative_to(_REPO_ROOT).as_posix()
     image_name = f"locally-built-{_sanitize_image_component(rel_identifier)}"
@@ -63,23 +65,25 @@ def _build_local_docker_image(dockerfile_spec: str) -> str:
     # Check if image already exists (e.g., pre-built in CI)
     try:
         result = subprocess.run(
-            ["docker", "image", "inspect", image_ref],
+            [engine, "image", "inspect", image_ref],
             capture_output=True,
             check=False,
         )
         if result.returncode == 0:
-            LOG.info("Docker image %s already exists, skipping build", image_ref)
+            LOG.info("%s image %s already exists, skipping build", engine.capitalize(), image_ref)
             return image_ref
     except FileNotFoundError:
         raise RuntimeError(
-            "Docker is required to build images from dockerfile specifications, but it was not found in PATH."
+            f"{engine.capitalize()} is required to build images from dockerfile specifications, but it was not found in PATH."
         )
 
-    LOG.info("Building Docker image %s from %s (context: %s)", image_ref, dockerfile_path, context_dir)
+    LOG.info(
+        "Building %s image %s from %s (context: %s)", engine.capitalize(), image_ref, dockerfile_path, context_dir
+    )
     try:
         subprocess.run(
             [
-                "docker",
+                engine,
                 "build",
                 "-f",
                 str(dockerfile_path),
@@ -91,10 +95,10 @@ def _build_local_docker_image(dockerfile_spec: str) -> str:
         )
     except FileNotFoundError as exc:
         raise RuntimeError(
-            "Docker is required to build images from dockerfile specifications, but it was not found in PATH."
+            f"{engine.capitalize()} is required to build images from dockerfile specifications, but it was not found in PATH."
         ) from exc
     except subprocess.CalledProcessError as exc:
-        raise RuntimeError(f"Failed to build Docker image from {dockerfile_path}") from exc
+        raise RuntimeError(f"Failed to build {engine.capitalize()} image from {dockerfile_path}") from exc
 
     return image_ref
 
