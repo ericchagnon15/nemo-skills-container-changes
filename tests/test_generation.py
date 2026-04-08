@@ -20,10 +20,12 @@ from types import SimpleNamespace
 
 import pytest
 
+from nemo_skills.evaluation.evaluator.math import MathEvaluator
 from nemo_skills.evaluation.metrics import ComputeMetrics
 from nemo_skills.inference.model.base import BaseModel
 from nemo_skills.pipeline.generate import _create_job_unified
 from nemo_skills.pipeline.utils.scripts import ServerScript
+from nemo_skills.utils import parse_reasoning
 
 
 @pytest.mark.timeout(300)
@@ -170,6 +172,25 @@ def test_generate_openai_format(tmp_path, format):
     assert len(data) == 2
     assert len(data[0]["generation"]) > 0
     assert len(data[1]["generation"]) > 0
+
+
+@pytest.mark.asyncio
+async def test_parse_reasoning_preserves_openai_split_reasoning_content():
+    sample = {
+        "generation": "\\boxed{18}",
+        "reasoning_content": "Remainder is 9 eggs, so the total is 18 dollars.",
+        "expected_answer": 18,
+    }
+
+    parse_reasoning(sample, "generation", "</think>")
+
+    assert sample["generation"] == "\\boxed{18}"
+    assert sample["_full_generation"] == "\\boxed{18}"
+    assert sample["_generation_finished_thinking"] is False
+
+    evaluated = await MathEvaluator(config={}, num_parallel_requests=1).eval_single(sample)
+    assert evaluated["predicted_answer"] == "18"
+    assert evaluated["symbolic_correct"] is True
 
 
 def test_server_metadata_from_num_tasks(tmp_path):

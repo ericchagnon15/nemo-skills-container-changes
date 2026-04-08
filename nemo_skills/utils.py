@@ -50,11 +50,15 @@ def parse_reasoning(sample: dict, generation_key: str = "generation", end_reason
     if not isinstance(sample[generation_key], str):
         return
     sample[f"_{generation_key}_finished_thinking"] = end_reasoning_string in sample[generation_key]
+    sample[f"_full_{generation_key}"] = sample[generation_key]
     if end_reasoning_string in sample[generation_key]:
-        sample[f"_full_{generation_key}"] = sample[generation_key]
         sample[generation_key] = sample[generation_key].split(end_reasoning_string)[-1].strip()
+    elif sample.get("reasoning_content") and sample[generation_key].strip():
+        # OpenAI-compatible reasoning endpoints can return thinking separately in
+        # `reasoning_content`, leaving `generation` as the final answer only.
+        # In that case there is nothing to split, so keep the final answer intact.
+        return
     else:
-        sample[f"_full_{generation_key}"] = sample[generation_key]
         sample[generation_key] = ""  # no end tag, so setting the generation to empty
         LOG.warning(
             "Thinking end tag `%s` not found in generation; setting generation to empty. "
