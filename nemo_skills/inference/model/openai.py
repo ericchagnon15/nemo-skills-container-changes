@@ -155,7 +155,8 @@ class OpenAIModel(BaseModel):
             params["top_logprobs"] = top_logprobs
             params["max_completion_tokens"] = tokens_to_generate
             params["temperature"] = temperature
-            params["top_p"] = top_p
+            if temperature != 0.0:
+                params["top_p"] = top_p
 
         return params
 
