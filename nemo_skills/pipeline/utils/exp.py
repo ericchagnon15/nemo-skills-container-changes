@@ -16,6 +16,7 @@ import contextlib
 import copy
 import logging
 import os
+import re
 import shlex
 import uuid
 from dataclasses import dataclass, fields
@@ -231,6 +232,19 @@ def wrap_slurm_command_for_cluster_runtime(
             '-v "$(dirname "$PWD"):$(dirname "$PWD")"',
         ]
     )
+
+    # When nemo-run's code-reuse creates a symlink for the code directory,
+    # srun --chdir resolves the symlink before nemo-run.sh executes, so $PWD
+    # ends up pointing at the real (target) directory.  The bash -lc command
+    # inside the container still references the *original* (symlink-side) path
+    # via hardcoded `cd` and PYTHONPATH entries.  Detect that path now (at
+    # script-generation time) and add a static mount for its parent so the
+    # symlink-side path is accessible inside the container regardless of what
+    # $PWD resolves to at runtime.
+    _cd_match = re.search(r'\bcd\s+(/\S+)', command)
+    if _cd_match:
+        _code_dir_parent = os.path.dirname(_cd_match.group(1))
+        parts.append(f"-v {shlex.quote(f'{_code_dir_parent}:{_code_dir_parent}')}")
     parts.extend(f"-v {shlex.quote(mount)}" for mount in mounts)
     parts.extend(f'-e {key}="${key}"' for key in sorted(env_vars))
     parts.extend([shlex.quote(container), "bash", "-lc", shlex.quote(command)])
