@@ -21,6 +21,9 @@ Where to look:
 - [ns-tests/README.md](ns-tests/README.md) describes the repo-local smoke-test assets for Perlmutter
 - [ns-tests/cluster_configs/perlmutter.yaml](ns-tests/cluster_configs/perlmutter.yaml) is the starter cluster config
 - [ns-tests/test_api_perlmutter.sh](ns-tests/test_api_perlmutter.sh) is the minimal API-backed generation smoke test
+- [ns-tests/quick_bench.sh](ns-tests/quick_bench.sh) is an `ns eval` example for gsm8k
+- [ns-tests/quick_robust.sh](ns-tests/quick_robust.sh) is an `ns robust_eval` example for gpqa
+- [ns-tests/prompt_set_config.yaml](ns-tests/prompt_set_config.yaml) is the prompt-set config used by the robustness script
 
 Nemo-Skills is a collection of pipelines to improve "skills" of large language models (LLMs). We support everything needed for LLM development, from synthetic data generation, to model training, to evaluation on a wide range of benchmarks. Start developing on a local workstation and move to a large-scale Slurm cluster with just a one-line change.
 

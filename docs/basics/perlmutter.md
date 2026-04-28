@@ -140,6 +140,36 @@ If `identity` is omitted, the current tunnel implementation can still fall back 
 
     Use an absolute path for `ssh_tunnel.identity`. `~` is not expanded there.
 
+### SSH connection multiplexing
+
+NeMo-Skills opens one SSH connection per submitted job. For robustness evaluations or any run that submits many jobs in a short window, this can trigger NERSC's rate-limiting and temporarily lock out your account.
+
+Add the following two stanzas to `~/.ssh/config` (replacing `<nersc_user>` and path values with your own):
+
+```
+Host perlmutter-mux
+    HostName perlmutter.nersc.gov
+    User <nersc_user>
+    ControlMaster auto
+    ControlPath ~/.ssh/cm_perlmutter
+    ControlPersist 600
+    ServerAliveInterval 60
+    IdentityFile /Users/<local_user>/.ssh/nersc
+
+Host perlmutter.nersc.gov
+    User <nersc_user>
+    ProxyCommand ssh -q -W %h:%p perlmutter-mux
+    IdentityFile /Users/<local_user>/.ssh/nersc-cert.pub
+```
+
+The first stanza establishes the master connection and holds it open for 10 minutes. The second stanza routes every subsequent connection (including those made by NeMo-Skills) through that single tunnel, so NERSC only sees one authentication event for the entire job-submission burst.
+
+Open the master connection once before submitting:
+
+```bash
+ssh perlmutter-mux true
+```
+
 ## Build a minimal image on Perlmutter
 
 For API-backed generation you do not need CUDA, vLLM, or a training image. A small Python image with the NeMo-Skills runtime dependencies is enough.
@@ -290,6 +320,36 @@ ns generate \
 ```
 
 NeMo-Skills automatically forwards common API environment variables from the local submission environment into the Slurm job.
+
+## Run evaluation and robustness benchmarks
+
+The `ns-tests/` directory includes two example scripts for running benchmarks on top of an API-backed endpoint.
+
+### Standard evaluation (`ns eval`)
+
+`ns-tests/quick_bench.sh` runs a full evaluation on the gsm8k math benchmark (~1.3k examples):
+
+```bash
+bash ns-tests/quick_bench.sh
+```
+
+It calls `ns prepare_data` to download the benchmark data to `/workspace/ns-data` on Perlmutter, then runs `ns eval`. Adjust `MODEL_NAME` and the `--output_dir` inside the script as needed.
+
+### Robustness evaluation (`ns robust_eval`)
+
+`ns-tests/quick_robust.sh` runs a robustness evaluation on gpqa using multiple prompt configurations and random seeds:
+
+```bash
+bash ns-tests/quick_robust.sh
+```
+
+`ns robust_eval` behaves like `ns eval` but requires an additional `--prompt_set_config` argument pointing at a YAML file that lists the prompt variants to evaluate. `ns-tests/prompt_set_config.yaml` is a ready-to-use example that covers gpqa with ten MCQ prompt variations.
+
+!!! warning
+
+    `ns robust_eval` submits an independent Slurm job for each prompt variation. With the example `prompt_set_config.yaml` (ten gpqa variations × 8 seeds = multiple jobs), this will exceed the job-count limit of the `debug` QOS. Before running the robustness script, change `qos` in `cluster_configs/perlmutter.yaml` to `regular` (or another non-debug queue).
+
+Both scripts source `./env_vars` for `OPENAI_BASE_URL` and `OPENAI_API_KEY`.
 
 ## Why both `OPENAI_API_KEY` and `NVIDIA_API_KEY`?
 
