@@ -223,6 +223,7 @@ def test_wrap_slurm_command_for_podman_hpc():
     assert wrapped.startswith("podman-hpc run --rm --gpu")
     assert '-w "$PWD"' in wrapped
     assert '-v "$(dirname "$PWD"):$(dirname "$PWD")"' in wrapped
+    assert '-v "$(dirname "$(readlink -f "$PWD")"):$(dirname "$(readlink -f "$PWD")")"' in wrapped
     assert "-v /pscratch/work:/workspace" in wrapped
     assert '-e HF_HOME="$HF_HOME"' in wrapped
     assert "nersc/nemo-skills:0.1 bash -lc " in wrapped
