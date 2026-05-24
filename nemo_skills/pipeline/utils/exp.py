@@ -230,6 +230,7 @@ def wrap_slurm_command_for_cluster_runtime(
         [
             '-w "$PWD"',
             '-v "$(dirname "$PWD"):$(dirname "$PWD")"',
+            '-v "$(dirname "$(readlink -f "$PWD")"):$(dirname "$(readlink -f "$PWD")")"',
         ]
     )
 
